@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bedled</title>
+<style>
+:root { color-scheme: light dark; --bg: #f4f4f4; --fg: #111; --key: #ddd; }
+@media (prefers-color-scheme: dark) {
+	:root { --bg: #111; --fg: #eee; --key: #333; }
+}
+body {
+	margin: 0 auto; max-width: 420px; padding: 16px;
+	background: var(--bg); color: var(--fg); font: 16px system-ui, sans-serif;
+}
+button {
+	min-height: 48px; border: 0; border-radius: 8px;
+	background: var(--key); color: inherit; font: inherit;
+}
+.row { display: flex; gap: 8px; align-items: center; margin: 12px 0; }
+.row > * { flex: 1; }
+#keys { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+label { display: flex; justify-content: space-between; align-items: center; margin: 8px 0; }
+input[type=number] { width: 6em; font: inherit; }
+</style>
+</head>
+<body>
+<div class="row"><button id="conn">Connect</button><span id="st">disconnected</span></div>
+<div id="keys"></div>
+<div class="row"><button id="auto" disabled>Back to auto</button></div>
+<label>Hold (s) <input id="hold" type="number" min="1" max="65535"></label>
+<label>On/off line (light) <input id="line" type="number" min="1" max="10000"></label>
+<label>Readings to trigger <input id="count" type="number" min="1" max="20"></label>
+<p>Light reads lower when brighter. Set the line between the reading
+with the strip on and the reading with it off.</p>
+<p>Readings to trigger: one every 67 ms. Fewer reacts faster; raise it
+if the light comes on with nobody there.</p>
+<div class="row"><button id="save">Save</button></div>
+<script>
+const SVC = '5e460000-5307-4314-ae68-b64efe32d39a';
+const KEY = '5e460001-5307-4314-ae68-b64efe32d39a';
+const STATE = '5e460002-5307-4314-ae68-b64efe32d39a';
+const CFG = '5e460003-5307-4314-ae68-b64efe32d39a';
+
+/*
+ * 44-key remote, row by row: name, colour, NEC code. The strip has red
+ * and blue swapped against the controller, so names and colours are what
+ * the strip shows, not what the remote is labelled.
+ */
+const KEYS = [
+	['Brighter', '', 0x00ff3ac5], ['Dimmer', '', 0x00ffba45],
+	['Play', '', 0x00ff827d], ['Power', '', 0x00ff02fd],
+	['blue', '#00f', 0x00ff1ae5], ['green', '#0a0', 0x00ff9a65],
+	['red', '#f00', 0x00ffa25d], ['white', '#fff', 0x00ff22dd],
+	['c1', '#0040ff', 0x00ff2ad5], ['c2', '#60c000', 0x00ffaa55],
+	['c3', '#ff4020', 0x00ff926d], ['c4', '#c080ff', 0x00ff12ed],
+	['c5', '#0070ff', 0x00ff0af5], ['c6', '#b0a000', 0x00ff8a75],
+	['c7', '#802060', 0x00ffb24d], ['c8', '#d090ff', 0x00ff32cd],
+	['c9', '#00a0ff', 0x00ff38c7], ['c10', '#608000', 0x00ffb847],
+	['c11', '#501040', 0x00ff7887], ['c12', '#ff9030', 0x00fff807],
+	['c13', '#00e0ff', 0x00ff18e7], ['c14', '#405000', 0x00ff9867],
+	['c15', '#6020a0', 0x00ff58a7], ['c16', '#ffb040', 0x00ffd827],
+	['Blue +', '', 0x00ff28d7], ['Green +', '', 0x00ffa857],
+	['Red +', '', 0x00ff6897], ['Quick', '', 0x00ffe817],
+	['Blue -', '', 0x00ff08f7], ['Green -', '', 0x00ff8877],
+	['Red -', '', 0x00ff48b7], ['Slow', '', 0x00ffc837],
+	['DIY1', '', 0x00ff30cf], ['DIY2', '', 0x00ffb04f],
+	['DIY3', '', 0x00ff708f], ['Cycle', '', 0x00fff00f],
+	['DIY4', '', 0x00ff10ef], ['DIY5', '', 0x00ff906f],
+	['DIY6', '', 0x00ff50af], ['Flash', '', 0x00ffd02f],
+	['Jump3', '', 0x00ff20df], ['Jump7', '', 0x00ffa05f],
+	['Fade3', '', 0x00ff609f], ['Fade7', '', 0x00ffe01f],
+];
+
+const $ = id => document.getElementById(id);
+let key, state, cfg, busy = Promise.resolve();
+
+/* Web Bluetooth allows one GATT operation at a time */
+function run(f) {
+	busy = busy.then(f).catch(e => { $('st').textContent = e.message; });
+}
+
+/* light on, manual mode, distance, wall (cm), light reading */
+function show(v) {
+	const manual = v.getUint8(1) !== 0, cm = v.getInt16(2, true);
+	$('st').textContent = (manual ? 'manual' : 'auto') + ', ' +
+		(v.getUint8(0) ? 'on' : 'off') + ', ' +
+		(cm < 0 ? 'no echo' : cm + ' cm') + ' (wall ' +
+		v.getInt16(4, true) + '), light ' + v.getUint16(6, true);
+	$('auto').disabled = !manual;
+}
+
+function u32(x) {
+	const d = new DataView(new ArrayBuffer(4));
+	d.setUint32(0, x, true);
+	return d;
+}
+
+for (const [name, color, code] of KEYS) {
+	const b = document.createElement('button');
+	if (color) {
+		b.style.background = color;
+		b.setAttribute('aria-label', name);
+	} else {
+		b.textContent = name;
+	}
+	b.onclick = () => run(() => key.writeValueWithResponse(u32(code)));
+	$('keys').append(b);
+}
+
+$('conn').onclick = () => run(async () => {
+	const dev = await navigator.bluetooth.requestDevice({
+		filters: [{ name: 'bedled' }],
+		optionalServices: [SVC],
+	});
+	dev.ongattserverdisconnected = () => { $('st').textContent = 'disconnected'; };
+	const s = await (await dev.gatt.connect()).getPrimaryService(SVC);
+	key = await s.getCharacteristic(KEY);
+	state = await s.getCharacteristic(STATE);
+	cfg = await s.getCharacteristic(CFG);
+	state.oncharacteristicvaluechanged = e => show(e.target.value);
+	await state.startNotifications();
+	const c = await cfg.readValue();
+	$('hold').value = c.getUint16(0, true);
+	$('line').value = c.getUint16(2, true);
+	$('count').value = c.getUint16(4, true);
+});
+
+/* Power switches to manual; this hands the light back to the sensor */
+$('auto').onclick = () => run(() =>
+	state.writeValueWithResponse(new Uint8Array([0])));
+
+$('save').onclick = () => run(() => {
+	const d = new DataView(new ArrayBuffer(6));
+	d.setUint16(0, $('hold').value, true);
+	d.setUint16(2, $('line').value, true);
+	d.setUint16(4, $('count').value, true);
+	return cfg.writeValueWithResponse(d);
+});
+
+if (!navigator.bluetooth)
+	$('st').textContent = 'needs Chrome on Android, over HTTPS';
+</script>
+</body>
+</html>
